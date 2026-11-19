@@ -9,6 +9,10 @@ RUN DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat /build/VERSION) bu
 
 FROM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder2
 ENV GO111MODULE=on CGO_ENABLED=0 GOWORK=off
+# Default to the China Go module mirror so builds work on restrictive networks.
+# Override elsewhere with: docker compose build --build-arg GOPROXY=https://proxy.golang.org,direct
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 
 ARG TARGETOS
 ARG TARGETARCH
