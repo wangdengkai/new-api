@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { toIntlLocale } from '@/i18n/languages'
+import { formatQuota } from '@/lib/format'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
@@ -74,6 +75,7 @@ import { formatChannelBalanceSummary } from '../../lib/channel-balance'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
 import { ChannelBalanceDetails } from '../channel-balance-details'
 import { useChannels } from '../channels-provider'
+import { MultiKeyQuotaLimitsDialog } from './multi-key-daily-quota-dialog'
 import { StatisticsCard } from './multi-key-statistics-card'
 import { MultiKeyTableRowActions } from './multi-key-table-row-actions'
 
@@ -115,6 +117,7 @@ export function MultiKeyManageDialog({
 
   // UI state
   const [statusFilter, setStatusFilter] = useState<number | null>(null)
+  const [quotaKey, setQuotaKey] = useState<KeyStatus | null>(null)
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
@@ -252,6 +255,21 @@ export function MultiKeyManageDialog({
     }
   }
 
+  const confirmKey =
+    confirmAction?.keyIndex !== undefined
+      ? keys.find((key) => key.index === confirmAction.keyIndex)
+      : undefined
+  const confirmDesc = confirmKey
+    ? `${t(getMultiKeyConfirmMessage(confirmAction))} (#${confirmKey.index + 1}${
+        confirmKey.key_preview ? ` · ${confirmKey.key_preview}` : ''
+      })`
+    : t(getMultiKeyConfirmMessage(confirmAction))
+
+  const maxUsage7d = keys.reduce(
+    (max, key) => Math.max(max, key.usage_7d ?? 0),
+    0
+  )
+
   const renderStatusBadge = (status: number) => {
     const config = getMultiKeyStatusConfig(status)
     return (
@@ -267,6 +285,67 @@ export function MultiKeyManageDialog({
   const formatKeyTimestamp = (timestamp?: number) => {
     if (!timestamp) return '-'
     return formatTimestamp(timestamp)
+  }
+
+  const renderQuotaLimits = (key: KeyStatus) => {
+    const windows = [
+      {
+        label: t('Daily'),
+        quota: key.daily_quota ?? 0,
+        used: key.daily_used ?? 0,
+      },
+      {
+        label: t('Weekly'),
+        quota: key.weekly_quota ?? 0,
+        used: key.weekly_used ?? 0,
+      },
+      {
+        label: t('Monthly'),
+        quota: key.monthly_quota ?? 0,
+        used: key.monthly_used ?? 0,
+      },
+    ].filter((window) => window.quota > 0)
+    if (windows.length === 0) {
+      return <span className='text-muted-foreground'>{t('Unlimited')}</span>
+    }
+    return (
+      <div className='space-y-0.5 whitespace-normal tabular-nums'>
+        {windows.map((window) => (
+          <div
+            key={window.label}
+            className={cn(window.used >= window.quota && 'text-destructive')}
+          >
+            {window.label}: {formatQuota(window.used)} /{' '}
+            {formatQuota(window.quota)}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderRecentUsage = (key: KeyStatus) => {
+    const week = key.usage_7d ?? 0
+    const month = key.usage_30d ?? 0
+    if (week <= 0 && month <= 0) {
+      return <span className='text-muted-foreground'>-</span>
+    }
+    const percent = maxUsage7d > 0 ? Math.round((week / maxUsage7d) * 100) : 0
+    return (
+      <div className='space-y-1 whitespace-normal tabular-nums'>
+        <div>
+          {t('Last 7 days: {{amount}}', { amount: formatQuota(week) })}
+        </div>
+        <div className='text-muted-foreground'>
+          {t('Last 30 days: {{amount}}', { amount: formatQuota(month) })}
+        </div>
+        <div className='bg-muted h-1 w-full rounded-full'>
+          <div
+            className='bg-primary h-1 rounded-full'
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </div>
+    )
   }
 
   if (!currentRow) return null
@@ -432,7 +511,7 @@ export function MultiKeyManageDialog({
             {!isLoading && !(keys.length === 0) && (
               <StaticDataTable
                 className='rounded-none border-0'
-                tableClassName='min-w-[800px]'
+                tableClassName='min-w-[1120px]'
                 data={keys}
                 getRowKey={(key) => key.index}
                 columns={[
@@ -444,10 +523,31 @@ export function MultiKeyManageDialog({
                     cell: (key) => `#${key.index + 1}`,
                   },
                   {
+                    id: 'key',
+                    header: t('Key'),
+                    className: 'w-44',
+                    cellClassName: 'font-mono text-sm',
+                    cell: (key) => key.key_preview,
+                  },
+                  {
                     id: 'status',
                     header: t('Status'),
                     className: 'w-32',
                     cell: (key) => renderStatusBadge(key.status),
+                  },
+                  {
+                    id: 'quota-limits',
+                    header: t('Quota Limits'),
+                    className: 'w-56',
+                    cellClassName: 'text-sm',
+                    cell: (key) => renderQuotaLimits(key),
+                  },
+                  {
+                    id: 'recent-usage',
+                    header: t('Recent Usage'),
+                    className: 'w-48',
+                    cellClassName: 'text-sm',
+                    cell: (key) => renderRecentUsage(key),
                   },
                   ...(keyBalances
                     ? [
@@ -505,6 +605,7 @@ export function MultiKeyManageDialog({
                         status={key.status}
                         canDelete={canEditSensitive}
                         onAction={openConfirm}
+                        onEditDailyQuota={() => setQuotaKey(key)}
                       />
                     ),
                   },
@@ -550,11 +651,20 @@ export function MultiKeyManageDialog({
         open={confirmAction !== null}
         onOpenChange={(open) => !open && setConfirmAction(null)}
         title={t('Confirm Action')}
-        desc={t(getMultiKeyConfirmMessage(confirmAction))}
+        desc={confirmDesc}
         destructive={isDestructiveAction(confirmAction)}
         isLoading={isPerformingAction}
         handleConfirm={performAction}
         finalFocus={getConfirmFinalFocus}
+      />
+
+      {/* Quota Limits Dialog */}
+      <MultiKeyQuotaLimitsDialog
+        open={quotaKey !== null}
+        onOpenChange={(isOpen) => !isOpen && setQuotaKey(null)}
+        channelId={currentRow.id}
+        keyStatus={quotaKey}
+        onSaved={() => loadKeyStatus(currentPage, pageSize)}
       />
     </>
   )

@@ -46,6 +46,16 @@ func hasCustomModelRatio(modelName string, currentRatio float64) bool {
 	return currentRatio != defaultRatio
 }
 
+// recordChannelKeyQuotaUsage counts settled quota against a channel key's quota
+// caps. A single-key channel records index 0; keys without caps are counted
+// too, so a cap configured later sees the current window's usage.
+func recordChannelKeyQuotaUsage(relayInfo *relaycommon.RelayInfo, quota int) {
+	if relayInfo == nil || relayInfo.ChannelMeta == nil || quota <= 0 {
+		return
+	}
+	model.AddChannelKeyQuotaUsage(relayInfo.ChannelId, relayInfo.ChannelMultiKeyIndex, int64(quota))
+}
+
 func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	if info.UsePrice {
 		modelPrice := decimal.NewFromFloat(info.ModelPrice)
@@ -235,6 +245,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		recordChannelKeyQuotaUsage(relayInfo, quota)
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
@@ -374,6 +385,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		recordChannelKeyQuotaUsage(relayInfo, quota)
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {

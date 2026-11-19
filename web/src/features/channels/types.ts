@@ -274,6 +274,20 @@ export interface KeyStatus {
   disabled_time?: number
   reason?: string
   key_preview?: string
+  daily_quota?: number // quota caps in quota units, missing = unlimited
+  daily_used?: number // quota settled in the current day window
+  weekly_quota?: number
+  weekly_used?: number
+  monthly_quota?: number
+  monthly_used?: number
+  usage_7d?: number // quota settled in the last 7 local days (dashboard data)
+  usage_30d?: number // quota settled in the last 30 local days
+}
+
+export interface MultiKeyQuotaLimits {
+  daily: number
+  weekly: number
+  monthly: number
 }
 
 export type MultiKeyConfirmAction = {
@@ -361,7 +375,11 @@ export interface MultiKeyManageParams {
     | 'disable_all_keys'
     | 'delete_key'
     | 'delete_disabled_keys'
+    | 'set_key_quota_limits'
   key_index?: number
+  daily_quota?: number
+  weekly_quota?: number
+  monthly_quota?: number
   page?: number
   page_size?: number
   status?: number // 1=enabled, 2=manual_disabled, 3=auto_disabled

@@ -143,6 +143,8 @@ func GetRandomSatisfiedChannel(
 		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
 	}
 
+	channels = filterExhaustedDailyQuotaChannels(channels)
+
 	if len(channels) == 0 {
 		return nil, nil
 	}
@@ -220,6 +222,21 @@ func GetRandomSatisfiedChannel(
 	}
 	// return null if no channel is not found
 	return nil, errors.New("channel not found")
+}
+
+// filterExhaustedDailyQuotaChannels drops channels whose per-key daily caps
+// leave no key able to serve traffic. Channels missing from the cache are kept
+// so the existing consistency error still reports them. The caller holds
+// channelSyncLock.
+func filterExhaustedDailyQuotaChannels(channels []int) []int {
+	filtered := make([]int, 0, len(channels))
+	for _, channelId := range channels {
+		channel, ok := channelsIDM[channelId]
+		if !ok || channel.HasQuotaCapacity() {
+			filtered = append(filtered, channelId)
+		}
+	}
+	return filtered
 }
 
 func CacheGetChannel(id int) (*Channel, error) {

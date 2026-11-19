@@ -1877,12 +1877,15 @@ func CopyChannel(c *gin.Context) {
 
 // MultiKeyManageRequest represents the request for multi-key management operations
 type MultiKeyManageRequest struct {
-	ChannelId int    `json:"channel_id"`
-	Action    string `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
-	KeyIndex  *int   `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
-	Page      int    `json:"page,omitempty"`      // for get_key_status pagination
-	PageSize  int    `json:"page_size,omitempty"` // for get_key_status pagination
-	Status    *int   `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	ChannelId    int    `json:"channel_id"`
+	Action       string `json:"action"`                // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status", "set_key_quota_limits"
+	KeyIndex     *int   `json:"key_index,omitempty"`   // for disable_key, enable_key, delete_key, and set_key_quota_limits actions
+	Page         int    `json:"page,omitempty"`        // for get_key_status pagination
+	PageSize     int    `json:"page_size,omitempty"`   // for get_key_status pagination
+	Status       *int   `json:"status,omitempty"`      // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	DailyQuota   *int64 `json:"daily_quota,omitempty"` // for set_key_quota_limits: caps in quota units, 0 removes them
+	WeeklyQuota  *int64 `json:"weekly_quota,omitempty"`
+	MonthlyQuota *int64 `json:"monthly_quota,omitempty"`
 }
 
 // MultiKeyStatusResponse represents the response for key status query
@@ -1903,7 +1906,15 @@ type KeyStatus struct {
 	Status       int    `json:"status"` // 1: enabled, 2: disabled
 	DisabledTime int64  `json:"disabled_time,omitempty"`
 	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	KeyPreview   string `json:"key_preview"` // masked prefix and suffix for identification
+	DailyQuota   int64  `json:"daily_quota,omitempty"`
+	DailyUsed    int64  `json:"daily_used,omitempty"`
+	WeeklyQuota  int64  `json:"weekly_quota,omitempty"`
+	WeeklyUsed   int64  `json:"weekly_used,omitempty"`
+	MonthlyQuota int64  `json:"monthly_quota,omitempty"`
+	MonthlyUsed  int64  `json:"monthly_used,omitempty"`
+	Usage7d      int64  `json:"usage_7d,omitempty"`
+	Usage30d     int64  `json:"usage_30d,omitempty"`
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1927,7 +1938,10 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 	}
 
-	if !channel.ChannelInfo.IsMultiKey {
+	// Quota limits and key status also apply to a single-key channel, where
+	// the only key is index 0.
+	if !channel.ChannelInfo.IsMultiKey &&
+		request.Action != "get_key_status" && request.Action != "set_key_quota_limits" {
 		common.ApiErrorT(c, "This channel is not in multi-key mode")
 		return
 	}
@@ -1950,6 +1964,9 @@ func ManageMultiKeys(c *gin.Context) {
 	switch request.Action {
 	case "get_key_status":
 		keys := channel.GetKeys()
+		if !channel.ChannelInfo.IsMultiKey {
+			keys = []string{channel.Key}
+		}
 
 		// Default pagination parameters
 		page := request.Page
@@ -1966,6 +1983,12 @@ func ManageMultiKeys(c *gin.Context) {
 
 		// Build all key status data first
 		var allKeyStatusList []KeyStatus
+		quotaUsage := model.GetChannelKeyQuotaUsage(channel.Id)
+		// Dashboard data is optional; a failure must not break key management.
+		usageTotals, usageErr := model.GetChannelKeyUsageTotals(channel.Id, time.Now())
+		if usageErr != nil {
+			common.SysLog(common.LogText("failed to load multi-key usage totals: channel_id=%d, error=%v", channel.Id, usageErr))
+		}
 		for i, key := range keys {
 			status := 1 // default enabled
 			var disabledTime int64
@@ -1974,6 +1997,13 @@ func ManageMultiKeys(c *gin.Context) {
 			if channel.ChannelInfo.MultiKeyStatusList != nil {
 				if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
 					status = s
+				}
+			}
+			if !channel.ChannelInfo.IsMultiKey {
+				// A single-key channel reports the channel's own status.
+				status = channel.Status
+				if status == 0 {
+					status = 1
 				}
 			}
 
@@ -1996,20 +2026,32 @@ func ManageMultiKeys(c *gin.Context) {
 				}
 			}
 
-			// Create key preview (first 10 chars); a plugin credential shows its label.
+			// Create key preview (masked prefix and last 4 chars); a plugin credential shows its label.
 			keyPreview := key
 			if preview, ok := service.PluginCredentialPreview(key); ok {
 				keyPreview = preview
+			} else if len(key) > 18 {
+				keyPreview = key[:10] + "..." + key[len(key)-4:]
 			} else if len(key) > 10 {
 				keyPreview = key[:10] + "..."
 			}
 
+			limit := channel.ChannelInfo.QuotaLimits[i]
+			totals := usageTotals[i]
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
 				Index:        i,
 				Status:       status,
 				DisabledTime: disabledTime,
 				Reason:       reason,
 				KeyPreview:   keyPreview,
+				DailyQuota:   limit.Daily,
+				DailyUsed:    quotaUsage[i].Daily,
+				WeeklyQuota:  limit.Weekly,
+				WeeklyUsed:   quotaUsage[i].Weekly,
+				MonthlyQuota: limit.Monthly,
+				MonthlyUsed:  quotaUsage[i].Monthly,
+				Usage7d:      totals.Last7Days,
+				Usage30d:     totals.Last30Days,
 			})
 		}
 
@@ -2128,6 +2170,57 @@ func ManageMultiKeys(c *gin.Context) {
 
 		model.InitChannelCache()
 		common.ApiSuccessT(c, "Key enabled", nil)
+		return
+
+	case "set_key_quota_limits":
+		if request.KeyIndex == nil {
+			common.ApiErrorT(c, "No key index specified to set quota limits")
+			return
+		}
+
+		keyIndex := *request.KeyIndex
+		keyCount := channel.ChannelInfo.MultiKeySize
+		if !channel.ChannelInfo.IsMultiKey {
+			keyCount = 1
+		}
+		if keyIndex < 0 || keyIndex >= keyCount {
+			common.ApiErrorT(c, "Key index out of range")
+			return
+		}
+		limit := model.ChannelKeyQuotaLimit{}
+		if request.DailyQuota != nil {
+			limit.Daily = *request.DailyQuota
+		}
+		if request.WeeklyQuota != nil {
+			limit.Weekly = *request.WeeklyQuota
+		}
+		if request.MonthlyQuota != nil {
+			limit.Monthly = *request.MonthlyQuota
+		}
+		if limit.Daily < 0 || limit.Weekly < 0 || limit.Monthly < 0 {
+			common.ApiErrorT(c, "Quota limit cannot be negative")
+			return
+		}
+
+		err = saveManagedKeyStatus(channel.Id, func(stored *model.Channel) error {
+			// 所有窗口都是 0 时取消该密钥的额度上限
+			if limit == (model.ChannelKeyQuotaLimit{}) {
+				delete(stored.ChannelInfo.QuotaLimits, keyIndex)
+				return nil
+			}
+			if stored.ChannelInfo.QuotaLimits == nil {
+				stored.ChannelInfo.QuotaLimits = make(map[int]model.ChannelKeyQuotaLimit)
+			}
+			stored.ChannelInfo.QuotaLimits[keyIndex] = limit
+			return nil
+		})
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+
+		model.InitChannelCache()
+		common.ApiSuccessT(c, "Quota limits updated", nil)
 		return
 
 	case "enable_all_keys":

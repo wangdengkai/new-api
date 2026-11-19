@@ -45,6 +45,7 @@ type DialogType =
   | 'ollama-models'
   | 'inference-status'
   | 'multi-key-manage'
+  | 'channel-quota-limits'
   | 'tag-batch-edit'
   | 'edit-tag'
   | 'copy-channel'

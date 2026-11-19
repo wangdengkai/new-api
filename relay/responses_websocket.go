@@ -1104,7 +1104,7 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 		}
 		return nil, types.NewErrorWithStatusCode(errors.New(message), code, selectErr.StatusCode, types.ErrOptionWithSkipRetry())
 	}
-	if err := middleware.SetupContextForSelectedChannel(c, channel, modelName); err != nil {
+	if err := middleware.SetupRelayContextForSelectedChannel(c, channel, modelName); err != nil {
 		return nil, err
 	}
 	return channel, nil

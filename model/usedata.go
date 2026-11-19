@@ -19,6 +19,7 @@ type QuotaData struct {
 	UseGroup            string `json:"use_group" gorm:"index;size:64;default:''"`
 	TokenID             int    `json:"token_id" gorm:"index;default:0"`
 	ChannelID           int    `json:"channel_id" gorm:"index;default:0"`
+	KeyIndex            int    `json:"key_index" gorm:"index;default:0"`
 	NodeName            string `json:"node_name" gorm:"index;size:64;default:''"`
 	TokenUsed           int    `json:"token_used" gorm:"default:0"`
 	Count               int    `json:"count" gorm:"default:0"`
@@ -39,6 +40,7 @@ type QuotaDataLogParams struct {
 	UseGroup            string
 	TokenID             int
 	ChannelID           int
+	KeyIndex            int
 	NodeName            string
 }
 
@@ -56,7 +58,7 @@ var CacheQuotaData = make(map[string]*QuotaData)
 var CacheQuotaDataLock = sync.Mutex{}
 
 func logQuotaDataCache(quotaData *QuotaData) {
-	key := fmt.Sprintf("%d\x00%s\x00%s\x00%d\x00%s\x00%d\x00%d\x00%s",
+	key := fmt.Sprintf("%d\x00%s\x00%s\x00%d\x00%s\x00%d\x00%d\x00%d\x00%s",
 		quotaData.UserID,
 		quotaData.Username,
 		quotaData.ModelName,
@@ -64,6 +66,7 @@ func logQuotaDataCache(quotaData *QuotaData) {
 		quotaData.UseGroup,
 		quotaData.TokenID,
 		quotaData.ChannelID,
+		quotaData.KeyIndex,
 		quotaData.NodeName,
 	)
 	count := quotaData.Count
@@ -92,6 +95,7 @@ func LogQuotaData(params QuotaDataLogParams) {
 		UseGroup:            params.UseGroup,
 		TokenID:             params.TokenID,
 		ChannelID:           params.ChannelID,
+		KeyIndex:            params.KeyIndex,
 		NodeName:            params.NodeName,
 		Count:               1,
 		Quota:               params.Quota,
@@ -116,8 +120,8 @@ func SaveQuotaDataCache() {
 	for _, quotaData := range CacheQuotaData {
 		quotaDataDB := &QuotaData{}
 		DB.Table("quota_data").
-			Where("user_id = ? and username = ? and model_name = ? and created_at = ? and use_group = ? and token_id = ? and channel_id = ? and node_name = ?",
-				quotaData.UserID, quotaData.Username, quotaData.ModelName, quotaData.CreatedAt, quotaData.UseGroup, quotaData.TokenID, quotaData.ChannelID, quotaData.NodeName).
+			Where("user_id = ? and username = ? and model_name = ? and created_at = ? and use_group = ? and token_id = ? and channel_id = ? and key_index = ? and node_name = ?",
+				quotaData.UserID, quotaData.Username, quotaData.ModelName, quotaData.CreatedAt, quotaData.UseGroup, quotaData.TokenID, quotaData.ChannelID, quotaData.KeyIndex, quotaData.NodeName).
 			First(quotaDataDB)
 		if quotaDataDB.Id > 0 {
 			//quotaDataDB.Count += quotaData.Count
@@ -134,8 +138,8 @@ func SaveQuotaDataCache() {
 
 func increaseQuotaData(quotaData *QuotaData) {
 	err := DB.Table("quota_data").
-		Where("user_id = ? and username = ? and model_name = ? and created_at = ? and use_group = ? and token_id = ? and channel_id = ? and node_name = ?",
-			quotaData.UserID, quotaData.Username, quotaData.ModelName, quotaData.CreatedAt, quotaData.UseGroup, quotaData.TokenID, quotaData.ChannelID, quotaData.NodeName).
+		Where("user_id = ? and username = ? and model_name = ? and created_at = ? and use_group = ? and token_id = ? and channel_id = ? and key_index = ? and node_name = ?",
+			quotaData.UserID, quotaData.Username, quotaData.ModelName, quotaData.CreatedAt, quotaData.UseGroup, quotaData.TokenID, quotaData.ChannelID, quotaData.KeyIndex, quotaData.NodeName).
 		Updates(map[string]any{
 			"count":                 gorm.Expr("count + ?", quotaData.Count),
 			"quota":                 gorm.Expr("quota + ?", quotaData.Quota),
@@ -190,4 +194,39 @@ func GetAllQuotaDates(startTime int64, endTime int64, username string) (quotaDat
 	//err = DB.Table("quota_data").Where("created_at >= ? and created_at <= ?", startTime, endTime).Find(&quotaDatas).Error
 	err = DB.Table("quota_data").Select("model_name, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens, created_at").Where("created_at >= ? and created_at <= ?", startTime, endTime).Group("model_name, created_at").Find(&quotaDatas).Error
 	return quotaDatas, err
+}
+
+// ChannelKeyUsageTotals is a key's settled quota over the recent windows of a
+// multi-key channel. Dashboard data only holds successful consume logs, so it
+// is usage, not attempts.
+type ChannelKeyUsageTotals struct {
+	Last7Days  int64 `json:"last_7_days"`
+	Last30Days int64 `json:"last_30_days"`
+}
+
+// GetChannelKeyUsageTotals sums the dashboard data of one channel per key over
+// the last 7 and 30 local days, counting today.
+func GetChannelKeyUsageTotals(channelId int, now time.Time) (map[int]ChannelKeyUsageTotals, error) {
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	since30Days := startOfToday.AddDate(0, 0, -29)
+	since7Days := startOfToday.AddDate(0, 0, -6)
+	type usageRow struct {
+		KeyIndex   int   `gorm:"column:key_index"`
+		Last7Days  int64 `gorm:"column:last_7_days"`
+		Last30Days int64 `gorm:"column:last_30_days"`
+	}
+	var rows []usageRow
+	err := DB.Table("quota_data").
+		Select("key_index, SUM(CASE WHEN created_at >= ? THEN quota ELSE 0 END) as last_7_days, SUM(quota) as last_30_days", since7Days.Unix()).
+		Where("channel_id = ? and created_at >= ?", channelId, since30Days.Unix()).
+		Group("key_index").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	totals := make(map[int]ChannelKeyUsageTotals, len(rows))
+	for _, row := range rows {
+		totals[row.KeyIndex] = ChannelKeyUsageTotals{Last7Days: row.Last7Days, Last30Days: row.Last30Days}
+	}
+	return totals, nil
 }
