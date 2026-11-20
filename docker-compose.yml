@@ -11,6 +11,11 @@
 #   4. Uncomment mysql_data in volumes section (line 64)
 #
 # ⚠️  IMPORTANT: Change all default passwords before deploying to production!
+#
+# Logs: ClickHouse is enabled by default through LOG_SQL_DSN. The clickhouse
+# container creates the new_api_logs database on first start; new-api creates
+# the logs table and applies the TTL itself. Logs already stored in PostgreSQL
+# are not migrated to ClickHouse.
 
 version: '3.4' # For compatibility with older Docker versions
 
@@ -32,8 +37,8 @@ services:
       - SQL_DSN=postgresql://root:123456@postgres:5432/new-api # ⚠️ IMPORTANT: Change the password in production!
 #      - SQL_DSN=root:123456@tcp(mysql:3306)/new-api  # Point to the mysql service, uncomment if using MySQL
 #      - LOG_SQL_DSN=postgresql://root:123456@postgres:5432/new-api-log # OPTIONAL: If you want a separate database for logging, uncomment and set this
-#      - LOG_SQL_DSN=clickhouse://default:123456@clickhouse:9000/new_api_logs # OPTIONAL: Use ClickHouse for logs only; also uncomment clickhouse in depends_on and the clickhouse service below
-#      - LOG_SQL_CLICKHOUSE_TTL_DAYS=0 # OPTIONAL: ClickHouse log retention days. Unset or 0 disables automatic deletion; set to e.g. 30 to keep 30 days
+      - LOG_SQL_DSN=clickhouse://default:123456@clickhouse:9000/new_api_logs # ClickHouse 日志库（默认启用），首次启动自动建库建表
+      - LOG_SQL_CLICKHOUSE_TTL_DAYS=0 # ClickHouse 日志保留天数：0/未设置表示永久保留；设为 30 则自动清理 30 天前的日志
       - REDIS_CONN_STRING=redis://:123456@redis:6379 # ⚠️ IMPORTANT: Change the password in production!
       - TZ=Asia/Shanghai
       - ERROR_LOG_ENABLED=true # 是否启用错误日志记录 (Whether to enable error log recording)
@@ -57,10 +62,12 @@ services:
 #      - UMAMI_SCRIPT_URL=https://analytics.umami.is/script.js  # Umami 脚本 URL，默认为官方地址 (Umami Script URL, defaults to official URL)
 
     depends_on:
-      - redis
-      - postgres
-#      - mysql  # Uncomment if using MySQL
-#      - clickhouse  # Uncomment if using ClickHouse for LOG_SQL_DSN
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
     networks:
       - new-api-network
     healthcheck:
@@ -106,19 +113,29 @@ services:
 #    ports:
 #      - "3306:3306"  # Uncomment if you need to access MySQL from outside Docker
 
-#  clickhouse:
-#    image: clickhouse/clickhouse-server:24.8
-#    container_name: clickhouse
-#    restart: always
-#    environment:
-#      CLICKHOUSE_DB: new_api_logs
-#      CLICKHOUSE_USER: default
-#      CLICKHOUSE_PASSWORD: 123456  # ⚠️ IMPORTANT: Change this password in production!
-#      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-#    volumes:
-#      - clickhouse_data:/var/lib/clickhouse
-#    networks:
-#      - new-api-network
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: clickhouse
+    restart: always
+    environment:
+      CLICKHOUSE_DB: new_api_logs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: 123456  # ⚠️ IMPORTANT: Change this password in production!
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - new-api-network
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 #    ports:
 #      - "8123:8123"  # HTTP interface, uncomment if you need external access
 #      - "9000:9000"  # Native interface used by the LOG_SQL_DSN example above
@@ -126,7 +143,7 @@ services:
 volumes:
   pg_data:
 #  mysql_data:
-#  clickhouse_data:
+  clickhouse_data:
 
 networks:
   new-api-network:
