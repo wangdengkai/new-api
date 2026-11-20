@@ -44,6 +44,14 @@ services:
       - ERROR_LOG_ENABLED=true # 是否启用错误日志记录 (Whether to enable error log recording)
       - BATCH_UPDATE_ENABLED=true  # 是否启用批量更新 (Whether to enable batch update)
       - NODE_NAME=new-api-node-1  # 节点名称，用于审计日志中标识节点身份；多节点/容器部署时建议设置 (Node name used in audit logs; recommended when running multiple instances or in containers)
+      # ---- 并发调优（纯转发 1000–2000 条流；16 GB 机器取值，机器更大可上调）----
+      - SQL_MAX_OPEN_CONNS=200  # 数据库连接上限，需小于 postgres 的 max_connections
+      - SQL_MAX_IDLE_CONNS=50
+      - STREAM_SCANNER_MAX_BUFFER_MB=16  # 单条流扫描缓冲上限，文本场景 16 MB 足够
+      - MAX_REQUEST_BODY_MB=32
+      - MAX_FILE_DOWNLOAD_MB=32
+      - PLUGIN_MEMORY_LIMIT_MB=256  # 不用插件时可忽略；启用插件时每个 JS 调用的内存上限
+      - GOMEMLIMIT=5GiB  # 与下面的 mem_limit 搭配，约为容器内存的 80%
 #      - DEFAULT_LANGUAGE=zh-CN  # 默认语言：日志输出，以及对方没有指定语言时返回的提示、邮件和通知；可选 en、zh-CN、zh-TW，不设置为 en (Default language of logs and of messages, emails and notifications when the reader states none: en, zh-CN or zh-TW; en if unset)
 #      - STREAMING_TIMEOUT=300  # 流模式无响应超时时间，单位秒，默认120秒，如果出现空补全可以尝试改为更大值 （Streaming timeout in seconds, default is 120s. Increase if experiencing empty completions）
 #      - RELAY_IDLE_CONN_TIMEOUT=90  # Relay HTTP 客户端空闲连接超时时间，单位秒，默认跟随 Go 标准库，设置为0表示不限制 (Relay HTTP client idle keep-alive timeout in seconds, defaults to Go standard library; set 0 to disable)
@@ -70,6 +78,11 @@ services:
         condition: service_healthy
     networks:
       - new-api-network
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    mem_limit: 6g  # 16 GB 机器；32 GB 以上可调到 12g 并同步上调 GOMEMLIMIT
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
       interval: 30s
@@ -81,6 +94,7 @@ services:
     container_name: redis
     restart: always
     command: ["redis-server", "--requirepass", "123456"]  # ⚠️ IMPORTANT: Change this password in production!
+    mem_limit: 768m
     networks:
       - new-api-network
 
@@ -88,6 +102,8 @@ services:
     image: postgres:15
     container_name: postgres
     restart: always
+    command: ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=1GB"]  # 与 SQL_MAX_OPEN_CONNS 配合；shared_buffers 按机器内存调整
+    mem_limit: 3g
     environment:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: 123456  # ⚠️ IMPORTANT: Change this password in production!
@@ -126,6 +142,7 @@ services:
       - clickhouse_data:/var/lib/clickhouse
     networks:
       - new-api-network
+    mem_limit: 4g  # 长期保留日志时按需上调；ClickHouse 会自动按 cgroup 限制内存
     ulimits:
       nofile:
         soft: 262144
