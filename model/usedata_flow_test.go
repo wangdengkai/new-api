@@ -2,6 +2,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,22 @@ func seedFlowLookupData(t *testing.T) {
 	require.NoError(t, DB.Create(&Token{Id: 11, UserId: 1, Key: "sk-primary", Name: "primary"}).Error)
 	require.NoError(t, DB.Create(&Token{Id: 22, UserId: 2, Key: "sk-backup", Name: "backup"}).Error)
 	require.NoError(t, DB.Delete(&Token{Id: 11}).Error)
+}
+
+func TestGetChannelKeyUsageTotalsCountsPerKeyWindows(t *testing.T) {
+	truncateTables(t)
+	now := time.Now()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	seedFlowQuotaData(t, QuotaData{ChannelID: 77, KeyIndex: 0, CreatedAt: startOfToday.Add(time.Hour).Unix(), Quota: 100})
+	seedFlowQuotaData(t, QuotaData{ChannelID: 77, KeyIndex: 0, CreatedAt: startOfToday.AddDate(0, 0, -3).Add(time.Hour).Unix(), Quota: 50})
+	seedFlowQuotaData(t, QuotaData{ChannelID: 77, KeyIndex: 1, CreatedAt: startOfToday.AddDate(0, 0, -10).Add(time.Hour).Unix(), Quota: 30})
+
+	totals, err := GetChannelKeyUsageTotals(77, now)
+	require.NoError(t, err)
+	require.Equal(t, map[int]ChannelKeyUsageTotals{
+		0: {Last7Days: 150, Last30Days: 150},
+		1: {Last7Days: 0, Last30Days: 30},
+	}, totals)
 }
 
 func TestGetFlowQuotaDataUsesQuotaDataRoleSpecificDimensions(t *testing.T) {

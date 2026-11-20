@@ -77,6 +77,18 @@ type ChannelInfo struct {
 	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
 	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
 	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	// QuotaLimits caps the settled quota each key may use per day, week and
+	// month window; key index -> limits. A single-key channel uses index 0. A
+	// missing entry or a non-positive value leaves that window unlimited.
+	QuotaLimits map[int]ChannelKeyQuotaLimit `json:"quota_limits,omitempty"`
+}
+
+// ChannelKeyQuotaLimit is the settable quota cap of one key in the day, week
+// and month windows. A non-positive value leaves the window unlimited.
+type ChannelKeyQuotaLimit struct {
+	Daily   int64 `json:"daily,omitempty"`
+	Weekly  int64 `json:"weekly,omitempty"`
+	Monthly int64 `json:"monthly,omitempty"`
 }
 
 type ChannelSortOptions struct {
@@ -217,8 +229,23 @@ func (channel *Channel) GetKeys() []string {
 }
 
 func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
-	// If not in multi-key mode, return the original key string directly.
+	return channel.getNextEnabledKey(nil)
+}
+
+// GetNextEnabledKeyForRelay picks a key for a relay attempt. Besides the
+// enabled status, a key must still be under its per-key quota caps; when every
+// enabled key reached a cap, the attempt fails so the relay can retry on
+// another channel.
+func (channel *Channel) GetNextEnabledKeyForRelay() (string, int, *types.NewAPIError) {
+	return channel.getNextEnabledKey(channel.keyWithinQuotaLimits)
+}
+
+func (channel *Channel) getNextEnabledKey(keyAllowed func(keyIndex int) bool) (string, int, *types.NewAPIError) {
+	// A single-key channel has no key to choose; it can still carry a quota cap.
 	if !channel.ChannelInfo.IsMultiKey {
+		if keyAllowed != nil && !keyAllowed(0) {
+			return "", 0, types.NewError(errors.New("the key reached its quota limits"), types.ErrorCodeChannelNoAvailableKey)
+		}
 		return channel.Key, 0, nil
 	}
 
@@ -244,11 +271,17 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		}
 		return common.ChannelStatusEnabled
 	}
+	allowed := func(idx int) bool {
+		if getStatus(idx) != common.ChannelStatusEnabled {
+			return false
+		}
+		return keyAllowed == nil || keyAllowed(idx)
+	}
 
-	// Collect indexes of enabled keys
+	// Collect indexes of selectable keys
 	enabledIdx := make([]int, 0, len(keys))
 	for i := range keys {
-		if getStatus(i) == common.ChannelStatusEnabled {
+		if allowed(i) {
 			enabledIdx = append(enabledIdx, i)
 		}
 	}
@@ -256,12 +289,19 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	// properly handle a channel with no available keys (e.g. mark channel disabled).
 	// Returning the first key here caused requests to keep using an already-disabled key.
 	if len(enabledIdx) == 0 {
+		if keyAllowed != nil {
+			for i := range keys {
+				if getStatus(i) == common.ChannelStatusEnabled {
+					return "", 0, types.NewError(errors.New("all enabled keys reached their quota limits"), types.ErrorCodeChannelNoAvailableKey)
+				}
+			}
+		}
 		return "", 0, types.NewError(errors.New("no enabled keys"), types.ErrorCodeChannelNoAvailableKey)
 	}
 
 	switch channel.ChannelInfo.MultiKeyMode {
 	case constant.MultiKeyModeRandom:
-		// Randomly pick one enabled key
+		// Randomly pick one selectable key
 		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
 		return keys[selectedIdx], selectedIdx, nil
 	case constant.MultiKeyModePolling:
@@ -281,25 +321,54 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 				// CacheUpdateChannel(channel)
 			}
 		}()
-		// Start from the saved polling index and look for the next enabled key
+		// Start from the saved polling index and look for the next selectable key
 		start := channelInfo.MultiKeyPollingIndex
 		if start < 0 || start >= len(keys) {
 			start = 0
 		}
 		for i := range keys {
 			idx := (start + i) % len(keys)
-			if getStatus(idx) == common.ChannelStatusEnabled {
+			if allowed(idx) {
 				// update polling index for next call (point to the next position)
 				channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
 				return keys[idx], idx, nil
 			}
 		}
-		// Fallback – should not happen, but return first enabled key
+		// Fallback – should not happen, but return first selectable key
 		return keys[enabledIdx[0]], enabledIdx[0], nil
 	default:
 		// Unknown mode, default to first enabled key (or original key string)
 		return keys[enabledIdx[0]], enabledIdx[0], nil
 	}
+}
+
+// keyWithinQuotaLimits reports whether a key is still under all of its quota
+// caps. Windows without a cap always pass.
+func (channel *Channel) keyWithinQuotaLimits(keyIndex int) bool {
+	limit := channel.ChannelInfo.QuotaLimits[keyIndex]
+	if limit == (ChannelKeyQuotaLimit{}) {
+		return true
+	}
+	usage := getChannelKeyQuotaUsage(channel.Id, keyIndex)
+	return (limit.Daily <= 0 || usage.Daily < limit.Daily) &&
+		(limit.Weekly <= 0 || usage.Weekly < limit.Weekly) &&
+		(limit.Monthly <= 0 || usage.Monthly < limit.Monthly)
+}
+
+// HasQuotaCapacity reports whether at least one key can still serve traffic
+// under the channel's quota caps. Channels without caps always pass; the relay
+// still checks the concrete key.
+func (channel *Channel) HasQuotaCapacity() bool {
+	limits := channel.ChannelInfo.QuotaLimits
+	if len(limits) == 0 {
+		return true
+	}
+	for i := range channel.GetKeys() {
+		if channel.keyWithinQuotaLimits(i) {
+			return true
+		}
+	}
+	return false
 }
 
 func (channel *Channel) SaveChannelInfo() error {

@@ -336,6 +336,11 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			affinitySatisfied := false
 			if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
+				if affinitySatisfied && !preferred.HasQuotaCapacity() {
+					// The pinned channel used up its per-key quota caps; fall back
+					// to ordinary selection like a disabled channel would.
+					affinitySatisfied = false
+				}
 			}
 			if affinitySatisfied {
 				if usingGroup == "auto" {

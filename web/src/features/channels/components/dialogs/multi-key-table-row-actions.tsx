@@ -27,6 +27,7 @@ type MultiKeyTableRowActionsProps = {
   status: number
   canDelete: boolean
   onAction: (action: MultiKeyConfirmAction) => void
+  onEditDailyQuota: (keyIndex: number) => void
 }
 
 export function MultiKeyTableRowActions({
@@ -34,12 +35,20 @@ export function MultiKeyTableRowActions({
   status,
   canDelete,
   onAction,
+  onEditDailyQuota,
 }: MultiKeyTableRowActionsProps) {
   const { t } = useTranslation()
   const isEnabled = status === 1
 
   return (
     <div className='flex justify-end gap-2'>
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => onEditDailyQuota(keyIndex)}
+      >
+        {t('Set Limits')}
+      </Button>
       {isEnabled ? (
         <Button
           variant='outline'

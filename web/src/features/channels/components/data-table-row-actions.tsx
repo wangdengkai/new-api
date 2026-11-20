@@ -147,6 +147,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     setOpen('multi-key-manage')
   }
 
+  const handleSetQuotaLimits = () => {
+    setCurrentRow(channel)
+    setOpen('channel-quota-limits')
+  }
+
   const handleToggleStatus = async (
     e?: React.MouseEvent<HTMLButtonElement>
   ) => {
@@ -347,6 +352,16 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           {isMultiKey && (
             <DropdownMenuItem onClick={handleManageKeys}>
               {t('Manage Keys')}
+              <DropdownMenuShortcut>
+                <Key size={16} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
+
+          {/* Quota limits of a single-key channel */}
+          {!isMultiKey && (
+            <DropdownMenuItem onClick={handleSetQuotaLimits}>
+              {t('Set Limits')}
               <DropdownMenuShortcut>
                 <Key size={16} />
               </DropdownMenuShortcut>

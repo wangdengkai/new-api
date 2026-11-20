@@ -148,28 +148,86 @@ func GetChannel(
 			return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
 		})
 	}
-	channel := Channel{}
-	if len(abilities) > 0 {
-		// Randomly choose one
-		weightSum := uint(0)
-		for _, ability_ := range abilities {
-			weightSum += ability_.Weight + 10
-		}
-		// Randomly choose one
-		weight := common.GetRandomInt(int(weightSum))
-		for _, ability_ := range abilities {
-			weight -= int(ability_.Weight) + 10
-			//log.Printf("weight: %d, ability weight: %d", weight, *ability_.Weight)
-			if weight <= 0 {
-				channel.Id = ability_.ChannelId
-				break
-			}
-		}
-	} else {
+	if len(abilities) == 0 {
 		return nil, nil
 	}
-	err = DB.First(&channel, "id = ?", channel.Id).Error
-	return &channel, err
+	channel := Channel{}
+	channelId, ok := pickWeightedAbilityChannelId(abilities)
+	if !ok {
+		return nil, nil
+	}
+	err = DB.First(&channel, "id = ?", channelId).Error
+	if err != nil {
+		return &channel, err
+	}
+	if channel.HasQuotaCapacity() {
+		return &channel, nil
+	}
+	// The picked channel used up its per-key daily caps; pick again among the
+	// same priority tier for channels that still have capacity.
+	return pickChannelWithDailyQuotaCapacity(abilities)
+}
+
+// pickWeightedAbilityChannelId picks a channel id from abilities, weighted by
+// each ability's weight plus ten.
+func pickWeightedAbilityChannelId(abilities []Ability) (int, bool) {
+	weightSum := uint(0)
+	for _, ability := range abilities {
+		weightSum += ability.Weight + 10
+	}
+	if weightSum == 0 {
+		return 0, false
+	}
+	weight := common.GetRandomInt(int(weightSum))
+	for _, ability := range abilities {
+		weight -= int(ability.Weight) + 10
+		if weight <= 0 {
+			return ability.ChannelId, true
+		}
+	}
+	return abilities[len(abilities)-1].ChannelId, true
+}
+
+// pickChannelWithDailyQuotaCapacity loads the abilities' channels and picks a
+// weighted-random channel that still has per-key daily quota capacity. It
+// returns nil when every channel reached its caps.
+func pickChannelWithDailyQuotaCapacity(abilities []Ability) (*Channel, error) {
+	channelIds := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := seen[ability.ChannelId]; ok {
+			continue
+		}
+		seen[ability.ChannelId] = struct{}{}
+		channelIds = append(channelIds, ability.ChannelId)
+	}
+	var channels []*Channel
+	if err := DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	channelsByID := make(map[int]*Channel, len(channels))
+	for _, channel := range channels {
+		channelsByID[channel.Id] = channel
+	}
+	available := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		channel, ok := channelsByID[ability.ChannelId]
+		if !ok || channel.HasQuotaCapacity() {
+			available = append(available, ability)
+		}
+	}
+	if len(available) == 0 {
+		return nil, nil
+	}
+	channelId, ok := pickWeightedAbilityChannelId(available)
+	if !ok {
+		return nil, nil
+	}
+	channel := Channel{}
+	if err := DB.First(&channel, "id = ?", channelId).Error; err != nil {
+		return nil, err
+	}
+	return &channel, nil
 }
 
 // filterAbilitiesByConstraints applies the same ChannelSatisfiesFilters

@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG } from '../constants'
 import { useChannels } from './channels-provider'
 import { BalanceQueryDialog } from './dialogs/balance-query-dialog'
+import { ChannelQuotaLimitsDialog } from './dialogs/channel-quota-limits-dialog'
 import { ChannelTestDialog } from './dialogs/channel-test-dialog'
 import { CopyChannelDialog } from './dialogs/copy-channel-dialog'
 import { EditTagDialog } from './dialogs/edit-tag-dialog'
@@ -91,6 +92,13 @@ export function ChannelsDialogs() {
       <MultiKeyManageDialog
         open={open === 'multi-key-manage'}
         onOpenChange={(v) => !v && setOpen(null)}
+      />
+
+      {/* Single-Key Channel Quota Limits Dialog */}
+      <ChannelQuotaLimitsDialog
+        open={open === 'channel-quota-limits'}
+        onOpenChange={(v) => !v && setOpen(null)}
+        channelId={open === 'channel-quota-limits' ? (currentRow?.id ?? null) : null}
       />
 
       {/* Tag Batch Edit Dialog */}

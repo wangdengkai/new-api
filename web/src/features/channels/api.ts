@@ -47,6 +47,7 @@ import type {
   GetChannelsParams,
   GetChannelsResponse,
   MultiKeyManageParams,
+  MultiKeyQuotaLimits,
   MultiKeyStatusResponse,
   SearchChannelsParams,
   SearchChannelsResponse,
@@ -650,6 +651,25 @@ export async function deleteDisabledMultiKeys(
     channel_id: channelId,
     action: 'delete_disabled_keys',
   }) as Promise<{ success: boolean; message?: string; data?: number }>
+}
+
+/**
+ * Set or remove a key's quota caps in a multi-key channel.
+ * The caps are in quota units; 0 removes a window's cap.
+ */
+export async function setMultiKeyQuotaLimits(
+  channelId: number,
+  keyIndex: number,
+  limits: MultiKeyQuotaLimits
+): Promise<{ success: boolean; message?: string }> {
+  return manageMultiKeys({
+    channel_id: channelId,
+    action: 'set_key_quota_limits',
+    key_index: keyIndex,
+    daily_quota: limits.daily,
+    weekly_quota: limits.weekly,
+    monthly_quota: limits.monthly,
+  }) as Promise<{ success: boolean; message?: string }>
 }
 
 // ============================================================================

@@ -131,7 +131,7 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		SetupRelayContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
@@ -616,7 +616,21 @@ func getTaskOriginModelName(c *gin.Context) string {
 	return ""
 }
 
+// SetupContextForSelectedChannel prepares the request context for the selected
+// channel and picks a key that is enabled. It leaves per-key daily quota caps
+// alone, so tests and pinned retries can use any enabled key.
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
+	return setupContextForSelectedChannel(c, channel, modelName, false)
+}
+
+// SetupRelayContextForSelectedChannel prepares the request context for a relay
+// attempt. The selected key must also be under its daily quota cap; a channel
+// with no such key fails the attempt so the relay can retry elsewhere.
+func SetupRelayContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
+	return setupContextForSelectedChannel(c, channel, modelName, true)
+}
+
+func setupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string, enforceKeyDailyQuota bool) *types.NewAPIError {
 	c.Set("original_model", modelName) // for retry
 	expectedPlugin := c.GetString("expected_task_plugin_key")
 	if channel == nil {
@@ -713,7 +727,14 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
+	var newAPIError *types.NewAPIError
+	var index int
+	var key string
+	if enforceKeyDailyQuota {
+		key, index, newAPIError = channel.GetNextEnabledKeyForRelay()
+	} else {
+		key, index, newAPIError = channel.GetNextEnabledKey()
+	}
 	if newAPIError != nil {
 		return newAPIError
 	}
