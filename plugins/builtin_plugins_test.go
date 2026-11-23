@@ -25,9 +25,6 @@ var requestPluginHooks = map[string][]string{
 	"request-redact":     {"ingress", "egress", "reply"},
 }
 
-// The built-in provider plugins, which declare relay routes and no task part.
-var providerPluginKeys = []string{"model-name-rewrite"}
-
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
 	require.NotNil(t, generation)
@@ -165,8 +162,8 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 		}
 	}
 	// Every other directory holds a request processing plugin, which has no
-	// task part, or a provider plugin, which has relay routes and no task part.
-	allKeys := slices.Concat(expectedKeys, slices.Collect(maps.Keys(requestPluginHooks)), providerPluginKeys)
+	// task part.
+	allKeys := slices.Concat(expectedKeys, slices.Collect(maps.Keys(requestPluginHooks)))
 	slices.Sort(allKeys)
 	assert.Equal(t, allKeys, actualKeys)
 
@@ -504,68 +501,4 @@ func TestBuiltInPluginsAddressNewAPIUpstreamOnNativeRoutes(t *testing.T) {
 			})
 		}
 	})
-}
-
-func TestBuiltInModelNameRewritePlugin(t *testing.T) {
-	generation := jsplugin.DefaultRegistry.Generation()
-	require.NotNil(t, generation)
-	plugin, found := generation.Get("model-name-rewrite")
-	require.True(t, found)
-	assert.True(t, plugin.Meta.HasProviderPart())
-	assert.False(t, plugin.Meta.HasTaskPart())
-
-	ctx := t.Context()
-	const baseURL = "https://upstream.example"
-	chat := jsplugin.HookContext{BaseURL: baseURL, Path: "/v1/chat/completions"}
-	converted, err := plugin.CallConvertRequest(ctx, chat, jsplugin.ConvertInput{
-		Path:   "/v1/chat/completions",
-		Model:  "vendor-model-ga-260813",
-		Stream: true,
-		Body:   []byte(`{"model":"client-model","messages":[]}`),
-	})
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"model":"vendor-model-ga-260813","messages":[]}`, string(converted.Body))
-	require.NotNil(t, converted.Stream)
-	assert.True(t, *converted.Stream)
-	require.NotEmpty(t, converted.State)
-
-	chat.State = converted.State
-	reply, upstreamErr, err := plugin.CallConvertResponse(ctx, chat, 200,
-		map[string]string{"Content-Type": "application/json"},
-		[]byte(`{"id":"c1","model":"vendor-model-ga-260813","choices":[]}`))
-	require.NoError(t, err)
-	require.Nil(t, upstreamErr)
-	assert.JSONEq(t, `{"id":"c1","model":"client-model","choices":[]}`, string(reply.Body))
-
-	streamed, _, upstreamErr, err := plugin.CallConvertStreamEvent(ctx, chat,
-		&jsplugin.StreamEvent{Data: `{"id":"c1","model":"vendor-model-ga-260813","choices":[]}`}, false)
-	require.NoError(t, err)
-	require.Nil(t, upstreamErr)
-	require.Len(t, streamed.Events, 1)
-	assert.JSONEq(t, `{"id":"c1","model":"client-model","choices":[]}`, streamed.Events[0].Data)
-
-	done, _, _, err := plugin.CallConvertStreamEvent(ctx, chat, nil, true)
-	require.NoError(t, err)
-	assert.Empty(t, done.Events)
-
-	messages := jsplugin.HookContext{BaseURL: baseURL, Path: "/v1/messages", State: converted.State}
-	reply, _, err = plugin.CallConvertResponse(ctx, messages, 200,
-		map[string]string{"Content-Type": "application/json"},
-		[]byte(`{"type":"message","model":"vendor-model-ga-260813","content":[]}`))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"message","model":"client-model","content":[]}`, string(reply.Body))
-
-	messageStart, _, _, err := plugin.CallConvertStreamEvent(ctx, messages,
-		&jsplugin.StreamEvent{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m1","model":"vendor-model-ga-260813"}}`}, false)
-	require.NoError(t, err)
-	require.Len(t, messageStart.Events, 1)
-	assert.Equal(t, "message_start", messageStart.Events[0].Event)
-	assert.JSONEq(t, `{"type":"message_start","message":{"id":"m1","model":"client-model"}}`, messageStart.Events[0].Data)
-
-	models := jsplugin.HookContext{BaseURL: baseURL, Path: "/v1/models"}
-	listed, _, err := plugin.CallConvertResponse(ctx, models, 200,
-		map[string]string{"Content-Type": "application/json"},
-		[]byte(`{"object":"list","data":[{"id":"vendor-model-ga-260813"}]}`))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"object":"list","data":[{"id":"vendor-model-ga-260813"}]}`, string(listed.Body))
 }
